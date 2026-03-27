@@ -1,4 +1,4 @@
-// bridge.go — RomaQuantum4D honest geometric simulator (Cl(4,0), global coupling).
+// bridge.go — RomaQuantum4D geometric simulator (Cl(4,0), global coupling).
 // Copyright RomanAILabs — Daniel Harding
 
 package quantum
@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	gamath "romanailabs/rq4d/internal/math"
-	"romanailabs/rq4d/internal/parser"
+	gamath "github.com/RomanAILabs-Auth/RomaQuantum4D/internal/math"
+	"github.com/RomanAILabs-Auth/RomaQuantum4D/internal/parser"
 )
 
 const (
@@ -34,7 +34,7 @@ type GlobalSystem struct {
 	SystemEntropy float64
 }
 
-// Stats records verifiable work (not “quantum supremacy” claims).
+// Stats records verifiable work metrics (traceable, not hype).
 type Stats struct {
 	TotalOps        uint64
 	GlobalPassCount uint64
@@ -49,6 +49,8 @@ type Engine struct {
 	Global    *GlobalSystem
 	TruthMode bool
 	Stats     Stats
+	// TraceHash is a rolling mix of script opcodes and operands in file order (deterministic).
+	TraceHash uint64
 }
 
 // NewEngine allocates n qubits in |0⟩ and global fields of length n.
@@ -76,8 +78,20 @@ func probOne(m gamath.Multivector) float64 {
 	return (m.C[1] * m.C[1]) / n
 }
 
-// applyHadamard acts on the computational subspace (grades mixing scalar e0 and vector e1).
-// A unit sandwich R*M*~R fixes scalars, so we use the explicit 2×2 Hadamard on C[0],C[1].
+// mixTraceInstr folds this script line into TraceHash (order-sensitive, reproducible).
+func (e *Engine) mixTraceInstr(ins parser.Instruction) {
+	var b [25]byte
+	b[0] = byte(ins.Op)
+	binary.LittleEndian.PutUint64(b[1:9], uint64(ins.N))
+	binary.LittleEndian.PutUint64(b[9:17], uint64(ins.Ctrl))
+	binary.LittleEndian.PutUint64(b[17:25], uint64(ins.Target))
+	x := fnv.New64a()
+	_, _ = x.Write(b[:])
+	block := x.Sum64()
+	e.TraceHash ^= block
+	e.TraceHash *= 1099511628211
+}
+
 func applyHadamard(m *gamath.Multivector) {
 	rt2 := math.Sqrt2
 	a0, a1 := m.C[0], m.C[1]
@@ -101,14 +115,57 @@ func (e *Engine) touchGlobalFromGate(qidx int) {
 	}
 }
 
-// applyCNOTLocal conditional flip + full-register ripple (O(n)).
+// deterministicSpread is a reproducible [0,1) pseudo-variate from global + local state (no math/rand).
+func (e *Engine) deterministicSpread(control, target int) float64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], e.TraceHash)
+	_, _ = h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], math.Float64bits(e.Global.GlobalPhase))
+	_, _ = h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], math.Float64bits(e.Global.Coherence))
+	_, _ = h.Write(buf[:])
+	m := e.Qubits[control]
+	for k := 0; k < gamath.Dim; k++ {
+		binary.LittleEndian.PutUint64(buf[:], math.Float64bits(m.C[k]))
+		_, _ = h.Write(buf[:])
+	}
+	binary.LittleEndian.PutUint64(buf[:], uint64(control))
+	_, _ = h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], uint64(target))
+	_, _ = h.Write(buf[:])
+	u := h.Sum64()
+	return float64(u%1_000_000) / 1e6
+}
+
+// cnotShouldFlipTarget blends local amplitude, global phase/coherence/energy field, and a deterministic spread.
+// It is not driven by P(|1⟩) > ½ alone.
+func (e *Engine) cnotShouldFlipTarget(control, target int) bool {
+	p1 := probOne(e.Qubits[control])
+	g := e.Global
+	var ef float64
+	if control >= 0 && control < len(g.EnergyField) {
+		ef = g.EnergyField[control]
+	}
+	phaseWindow := 0.5 + 0.5*math.Sin(g.GlobalPhase+float64(control)*0.17+float64(target)*0.09)
+	coh := g.Coherence
+	if coh < 1e-9 {
+		coh = 1e-9
+	}
+	score := p1*0.38 + ef*0.28 + phaseWindow*0.22 + coh*0.12*(0.5+0.5*p1)
+	spread := e.deterministicSpread(control, target)
+	score += (spread - 0.5) * 0.14 * coh
+	return score > 0.5
+}
+
+// applyCNOTLocal conditional flip (field-blended) + full-register ripple (O(n)).
 func (e *Engine) applyCNOTLocal(control, target int) {
 	n := len(e.Qubits)
 	if control < 0 || control >= n || target < 0 || target >= n {
 		return
 	}
 	p1 := probOne(e.Qubits[control])
-	if p1 > 0.5 {
+	if e.cnotShouldFlipTarget(control, target) {
 		applyPauliX(&e.Qubits[target])
 	}
 	ctrl := e.Qubits[control]
@@ -124,7 +181,6 @@ func (e *Engine) applyCNOTLocal(control, target int) {
 		}
 		w := p1 * math.Exp(-rippleDecay*float64(d)) * coher
 		tail := p1 * coher * longRangeScale * invN
-		// No branch that skips the inner loop: every j receives a write.
 		for k := 0; k < gamath.Dim; k++ {
 			coupling := (w + tail) * rippleStrength
 			e.Qubits[j].C[k] += coupling * ctrl.C[k]
@@ -141,7 +197,6 @@ func (e *Engine) applyGlobalPass() {
 
 	for i := 0; i < n; i++ {
 		m := &e.Qubits[i]
-		// Touch every component: normalization + interference + decay.
 		var norm float64
 		for k := 0; k < gamath.Dim; k++ {
 			v := m.C[k]
@@ -175,15 +230,19 @@ func (e *Engine) applyGlobalPass() {
 	e.Stats.GlobalPassCount++
 	e.Stats.GlobalPassNanos += time.Since(start).Nanoseconds()
 	bytesPer := uint64(gamath.Dim * 8)
-	e.Stats.BytesTouched += uint64(n) * bytesPer * 2 // read+write pass
+	e.Stats.BytesTouched += uint64(n) * bytesPer * 2
 }
 
-// ChecksumFNV folds every multivector component and global scalars into FNV-1a.
+// ChecksumFNV includes register, globals, execution-order trace, and counters.
 func (e *Engine) ChecksumFNV() uint64 {
 	h := fnv.New64a()
 	var buf [8]byte
 	writeF := func(f float64) {
 		binary.LittleEndian.PutUint64(buf[:], math.Float64bits(f))
+		_, _ = h.Write(buf[:])
+	}
+	writeU64 := func(v uint64) {
+		binary.LittleEndian.PutUint64(buf[:], v)
 		_, _ = h.Write(buf[:])
 	}
 
@@ -199,6 +258,9 @@ func (e *Engine) ChecksumFNV() uint64 {
 			writeF(e.Qubits[i].C[k])
 		}
 	}
+	writeU64(e.TraceHash)
+	writeU64(e.Stats.TotalOps)
+	writeU64(e.Stats.GlobalPassCount)
 	return h.Sum64()
 }
 
@@ -210,7 +272,6 @@ func parallelApplyX(q []gamath.Multivector, indices []int) {
 	parallelGate(q, indices, func(m *gamath.Multivector) { applyPauliX(m) })
 }
 
-// parallelGate runs fn on each index using a bounded worker count (real work, no per-index goroutine storm).
 func parallelGate(q []gamath.Multivector, indices []int, fn func(*gamath.Multivector)) {
 	if len(indices) == 0 {
 		return
@@ -305,7 +366,7 @@ func (e *Engine) flushXBatch(indices []int) {
 	e.applyGlobalPass()
 }
 
-// MeasureAll prints per-qubit geometric probabilities and updates global entropy/coherence.
+// MeasureAll prints per-qubit geometric probabilities; couples each lane to globals.
 func (e *Engine) MeasureAll() {
 	g := e.Global
 	n := len(e.Qubits)
@@ -316,12 +377,13 @@ func (e *Engine) MeasureAll() {
 		p1 := m.C[1] * m.C[1]
 		fmt.Printf("MEASURE q[%d]: P(|0>)=%.4f P(|1>)=%.4f\n", i, p0, p1)
 		g.SystemEntropy += p0 * p1
+		e.touchGlobalFromGate(i)
 	}
 	g.Coherence *= 0.999
 	e.applyGlobalPass()
 }
 
-// Run parses execution: first instruction must be ALLOC; respects truth mode batching.
+// Run executes instructions: first must be ALLOC; respects truth-mode batching.
 func Run(instructions []parser.Instruction, truthMode bool) (*Engine, error) {
 	var n int
 	var started bool
@@ -343,6 +405,7 @@ func Run(instructions []parser.Instruction, truthMode bool) (*Engine, error) {
 			n = ins.N
 			eng = NewEngine(n)
 			eng.TruthMode = truthMode
+			eng.mixTraceInstr(ins)
 			eng.applyGlobalPass()
 			started = true
 		case parser.OpH:
@@ -352,6 +415,7 @@ func Run(instructions []parser.Instruction, truthMode bool) (*Engine, error) {
 			if ins.N >= n {
 				return nil, fmt.Errorf("H: target %d out of range (n=%d)", ins.N, n)
 			}
+			eng.mixTraceInstr(ins)
 			if len(xBatch) > 0 {
 				eng.flushXBatch(xBatch)
 				xBatch = xBatch[:0]
@@ -364,6 +428,7 @@ func Run(instructions []parser.Instruction, truthMode bool) (*Engine, error) {
 			if ins.N >= n {
 				return nil, fmt.Errorf("X: target %d out of range (n=%d)", ins.N, n)
 			}
+			eng.mixTraceInstr(ins)
 			if len(hBatch) > 0 {
 				eng.flushHBatch(hBatch)
 				hBatch = hBatch[:0]
@@ -374,6 +439,7 @@ func Run(instructions []parser.Instruction, truthMode bool) (*Engine, error) {
 				return nil, fmt.Errorf("CNOT before ALLOC")
 			}
 			flush(eng)
+			eng.mixTraceInstr(ins)
 			if ins.Ctrl >= n || ins.Target >= n {
 				return nil, fmt.Errorf("CNOT: indices out of range")
 			}
@@ -387,6 +453,7 @@ func Run(instructions []parser.Instruction, truthMode bool) (*Engine, error) {
 				return nil, fmt.Errorf("MEASURE before ALLOC")
 			}
 			flush(eng)
+			eng.mixTraceInstr(ins)
 			eng.MeasureAll()
 			eng.Stats.TotalOps++
 		}

@@ -6,7 +6,24 @@
 
 **Full documentation (install + user + programming + LLM pack):** [docs/RQ4D_MASTER_GUIDE.md](docs/RQ4D_MASTER_GUIDE.md)
 
-## World-record style demo (PowerShell, any clone path)
+## Build, run, install
+
+From the repository root (module `github.com/RomanAILabs-Auth/RomaQuantum4D`):
+
+```bash
+go build -o rq4d ./cmd/rq4d          # Unix/macOS binary name
+go build -o rq4d.exe ./cmd/rq4d     # Windows
+go install ./cmd/rq4d                 # installs rq4d to $GOPATH/bin or $GOBIN
+```
+
+Run a script:
+
+```bash
+rq4d examples/manifold_sweep.rq4d
+rq4d --truth-mode examples/manifold_sweep.rq4d
+```
+
+## Large-scale geometric demo (PowerShell, any clone path)
 
 From the repo root (or invoke by full path):
 
@@ -16,7 +33,7 @@ pwsh -File .\scripts\RQ4D_World_Record.ps1 -QubitCount 65536
 pwsh -File .\scripts\RQ4D_World_Record.ps1 -QubitCount 131072 -GenerateOnly
 ```
 
-Optional: `-MirrorDir "D:\Backups\RomanAILabs"` copies the generated `.rq4d` and this script there.  
+Optional: `-MirrorDir` copies the generated `.rq4d` and this script there.  
 `-EngineRoot` overrides auto-detected repo root. `-SkipBuild` uses an existing `rq4d` / `rq4d.exe` binary.
 
 ## Featured demo (8-qubit manifold sweep)
@@ -50,14 +67,14 @@ go run ./cmd/rq4d examples/parallel_h.rq4d
 | `ALLOC n` | n qubits in $\|0\rangle$ |
 | `H i` | Hadamard on qubit `i` (consecutive `H` lines batch in parallel unless `--truth-mode`) |
 | `X i` | Pauli-X (bit flip) on `i` |
-| `CNOT c t` | Conditional X on `t` when control `c` is $\|1\rangle$ |
+| `CNOT c t` | Field-conditioned update on `t` (local amplitude + global phase/coherence/energy; not a literal device CNOT) |
 | `MEASURE` | Print $P(\|0\rangle)$, $P(\|1\rangle)$ per qubit |
 
 Lines starting with `#` are comments.
 
 ## Module
 
-`romanailabs/rq4d`
+`github.com/RomanAILabs-Auth/RomaQuantum4D`
 
 ## Copyright
 

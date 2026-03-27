@@ -57,7 +57,7 @@ if (-not [string]::IsNullOrWhiteSpace($MirrorDir)) {
     }
 }
 
-Write-Host "--- RQ4D World Record demo (universal paths) ---" -ForegroundColor Yellow
+Write-Host "--- RQ4D large-scale geometric simulation demo (universal paths) ---" -ForegroundColor Yellow
 Write-Host "EngineRoot: $EngineRoot" -ForegroundColor DarkGray
 Write-Host "QubitCount: $QubitCount" -ForegroundColor DarkGray
 

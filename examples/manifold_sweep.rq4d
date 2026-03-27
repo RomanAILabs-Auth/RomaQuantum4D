@@ -4,7 +4,7 @@
 # 1. Allocate an 8-Qubit SoA Array
 ALLOC 8
 
-# 2. Parallel Spacetime Fold (The engine will batch these into one Goroutine sweep)
+# 2. Hadamard on each lane (consecutive H lines may batch; one global pass after the batch)
 H 0
 H 1
 H 2
@@ -14,5 +14,5 @@ H 5
 H 6
 H 7
 
-# 3. Collapse the Manifold and Read Telemetry
+# 3. Measurement readout (geometric probabilities)
 MEASURE
