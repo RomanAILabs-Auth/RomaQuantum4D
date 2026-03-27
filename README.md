@@ -4,6 +4,19 @@
 
 **Repository:** [github.com/RomanAILabs-Auth/RomaQuantum4D](https://github.com/RomanAILabs-Auth/RomaQuantum4D)
 
+## World-record style demo (PowerShell, any clone path)
+
+From the repo root (or invoke by full path):
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\scripts\RQ4D_World_Record.ps1
+pwsh -File .\scripts\RQ4D_World_Record.ps1 -QubitCount 65536
+pwsh -File .\scripts\RQ4D_World_Record.ps1 -QubitCount 131072 -GenerateOnly
+```
+
+Optional: `-MirrorDir "D:\Backups\RomanAILabs"` copies the generated `.rq4d` and this script there.  
+`-EngineRoot` overrides auto-detected repo root. `-SkipBuild` uses an existing `rq4d` / `rq4d.exe` binary.
+
 ## Featured demo (8-qubit manifold sweep)
 
 Parallel Hadamard on eight lanes, then measurement (50/50 superposition per qubit):
