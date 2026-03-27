@@ -4,6 +4,8 @@
 
 **Repository:** [github.com/RomanAILabs-Auth/RomaQuantum4D](https://github.com/RomanAILabs-Auth/RomaQuantum4D)
 
+**Full documentation (install + user + programming + LLM pack):** [docs/RQ4D_MASTER_GUIDE.md](docs/RQ4D_MASTER_GUIDE.md)
+
 ## World-record style demo (PowerShell, any clone path)
 
 From the repo root (or invoke by full path):
