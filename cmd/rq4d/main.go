@@ -29,6 +29,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	const ansiGreen = "\033[32m"
+	const ansiReset = "\033[0m"
+	fmt.Printf("%sExecuting RQ4D HyperEngine...%s\n", ansiGreen, ansiReset)
+
 	var qubits []gamath.Multivector
 	for k := 0; k < len(instrs); {
 		ins := instrs[k]
