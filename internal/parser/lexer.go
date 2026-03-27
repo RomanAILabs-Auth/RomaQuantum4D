@@ -75,8 +75,9 @@ func parseLine(line string) (Instruction, error) {
 			return Instruction{}, fmt.Errorf("ALLOC: want ALLOC [n]")
 		}
 		n, err := strconv.Atoi(fields[1])
-		if err != nil || n < 1 || n > 1<<20 {
-			return Instruction{}, fmt.Errorf("ALLOC: invalid n")
+		// Large registers are allowed; cost is O(n) per global pass (honest scaling).
+		if err != nil || n < 1 || n > 1<<24 {
+			return Instruction{}, fmt.Errorf("ALLOC: invalid n (allowed 1 .. 2^24)")
 		}
 		return Instruction{Op: OpAlloc, N: n}, nil
 	case "H":

@@ -1,148 +1,400 @@
-// bridge.go
-// Copyright RomanAILabs - Daniel Harding
+// bridge.go — RomaQuantum4D honest geometric simulator (Cl(4,0), global coupling).
+// Copyright RomanAILabs — Daniel Harding
 
-// Package quantum maps geometric qubit states into Cl(4,0) and applies gates as multivector products.
-// Roma4D alignment: gates behave like rotor sweeps (p = p * rot in .r4d); here we use Cl(4,0)
-// products on multivector “particles” without complex matrices or density matrices.
 package quantum
 
 import (
+	"encoding/binary"
 	"fmt"
-	"io"
-	stdmath "math"
+	"hash/fnv"
+	"math"
+	"runtime"
 	"sync"
+	"time"
 
 	gamath "romanailabs/rq4d/internal/math"
+	"romanailabs/rq4d/internal/parser"
 )
 
 const (
-	bladeScalar      = 0
-	bladeE1          = 1
-	bladeE2          = 2
-	bladeE12         = 3
-	sqrt1d2          = 0.7071067811865476 // 1/sqrt(2)
+	rippleDecay    = 0.07
+	rippleStrength = 1e-5
+	longRangeScale = 1e-7
+	interfereBlend = 0.012
+	gradeDecay     = 8e-5
+	phaseCoupling  = 1e-4
+	coherenceGate  = 0.9997
 )
 
-// QubitZero returns |0⟩ as scalar 1 (all other blades zero), per spec.
-func QubitZero() gamath.Multivector {
-	var m gamath.Multivector
-	m.C[bladeScalar] = 1.0
-	return m
+// GlobalSystem is shared manifold state; every gate and pass reads/writes it.
+type GlobalSystem struct {
+	GlobalPhase   float64
+	EnergyField   []float64
+	Coherence     float64
+	SystemEntropy float64
 }
 
-// QubitOne returns |1⟩ as vector e1 — orthogonal partner to |0⟩ in this GA encoding.
-func QubitOne() gamath.Multivector {
-	var m gamath.Multivector
-	m.C[bladeE1] = 1.0
-	return m
+// Stats records verifiable work (not “quantum supremacy” claims).
+type Stats struct {
+	TotalOps        uint64
+	GlobalPassCount uint64
+	GlobalPassNanos int64
+	BytesTouched    uint64
+	LastChecksum    uint64
 }
 
-// Hadamard returns a Cl(4,0) operator as a Rotor wrapper: left-multiplying |0⟩ yields (|0⟩+|1⟩)/√2
-// in this encoding (scalar + e1), i.e. geometric superposition without complex amplitudes.
-func Hadamard() gamath.Rotor {
-	var H gamath.Multivector
-	H.C[bladeScalar] = sqrt1d2
-	H.C[bladeE1] = sqrt1d2
-	return gamath.Rotor{M: H}
+// Engine holds the full register plus global coupling.
+type Engine struct {
+	Qubits    []gamath.Multivector
+	Global    *GlobalSystem
+	TruthMode bool
+	Stats     Stats
 }
 
-// PauliX is a π rotation in the e1∧e2 plane (sandwich swaps e1↔e2 in that subspace).
-func PauliX() gamath.Rotor {
-	var R gamath.Multivector
-	R.C[bladeE12] = 1.0
-	return gamath.Rotor{M: gamath.Normalize(R)}
+// NewEngine allocates n qubits in |0⟩ and global fields of length n.
+func NewEngine(n int) *Engine {
+	if n < 1 {
+		n = 1
+	}
+	g := &GlobalSystem{
+		EnergyField: make([]float64, n),
+		Coherence:   1.0,
+	}
+	q := make([]gamath.Multivector, n)
+	for i := range q {
+		q[i].C[0] = 1.0
+		g.EnergyField[i] = 1.0
+	}
+	return &Engine{Qubits: q, Global: g}
 }
 
-// PauliXBitFlip is computational NOT in the scalar/e1 encoding: e1 * 1 = e1, e1 * e1 = 1.
-// CNOT and script opcode X use this (not the e12 sandwich rotor).
-func PauliXBitFlip() gamath.Rotor {
-	var R gamath.Multivector
-	R.C[bladeE1] = 1.0
-	return gamath.Rotor{M: R}
-}
-
-// ApplyGate applies the gate to the state using geometric product order: GeometricProduct(rotor.M, state).
-// The result is normalized for a stable “probability mass” analogue (unit norm in R^16).
-func ApplyGate(state gamath.Multivector, gate gamath.Rotor) gamath.Multivector {
-	out := gamath.GeometricProduct(gate.M, state)
-	return gamath.Normalize(out)
-}
-
-// ApplyGateSandwich applies R * state * ~R (useful for Pauli-X on vector-encoded states).
-func ApplyGateSandwich(state gamath.Multivector, gate gamath.Rotor) gamath.Multivector {
-	out := gate.Sandwich(state)
-	return gamath.Normalize(out)
-}
-
-// BlochPhase returns a cheap real “phase proxy” atan2(scalar, e1) for telemetry (not complex arg).
-func BlochPhase(m gamath.Multivector) float64 {
-	return stdmath.Atan2(m.C[bladeE1], m.C[bladeScalar])
-}
-
-// ctrlOneEps treats the control as |1⟩ only when P(|1⟩) is essentially 1 (avoids spurious flips on |+⟩).
-const ctrlOneEps = 1e-6
-
-// ProbComputationalOne returns P(|1⟩) ≈ e1 blade energy / total norm² (single-qubit readout proxy).
-func ProbComputationalOne(m gamath.Multivector) float64 {
+func probOne(m gamath.Multivector) float64 {
 	n := gamath.NormSq(m)
-	if n < 1e-18 {
+	if n < 1e-30 {
 		return 0
 	}
-	return (m.C[bladeE1] * m.C[bladeE1]) / n
+	return (m.C[1] * m.C[1]) / n
 }
 
-// CNOTGate applies a Pauli-X bit-flip to the target iff the control multivector is (approximately) |1⟩.
-// Independent multivectors cannot model full entanglement; this is the conditional-rotor stepping stone.
-func CNOTGate(qubits []gamath.Multivector, control, target int) {
-	if len(qubits) == 0 || control == target {
-		return
+// applyHadamard acts on the computational subspace (grades mixing scalar e0 and vector e1).
+// A unit sandwich R*M*~R fixes scalars, so we use the explicit 2×2 Hadamard on C[0],C[1].
+func applyHadamard(m *gamath.Multivector) {
+	rt2 := math.Sqrt2
+	a0, a1 := m.C[0], m.C[1]
+	m.C[0] = (a0 + a1) / rt2
+	m.C[1] = (a0 - a1) / rt2
+}
+
+func applyPauliX(m *gamath.Multivector) {
+	m.C[0], m.C[1] = m.C[1], m.C[0]
+}
+
+func (e *Engine) touchGlobalFromGate(qidx int) {
+	g := e.Global
+	g.GlobalPhase = math.Mod(g.GlobalPhase+phaseCoupling*float64(qidx+1), 2*math.Pi)
+	if qidx >= 0 && qidx < len(g.EnergyField) {
+		g.EnergyField[qidx] = gamath.NormSq(e.Qubits[qidx]) / float64(gamath.Dim)
 	}
-	if control < 0 || target < 0 || control >= len(qubits) || target >= len(qubits) {
-		return
-	}
-	p1 := ProbComputationalOne(qubits[control])
-	if p1 > 1.0-ctrlOneEps {
-		qubits[target] = ApplyGate(qubits[target], PauliXBitFlip())
+	g.Coherence *= coherenceGate
+	if g.Coherence < 1e-6 {
+		g.Coherence = 1e-6
 	}
 }
 
-// measSlot holds parallel measurement aggregation output.
-type measSlot struct {
-	p0, p1, other float64
-}
-
-// Measure writes per-qubit computational-basis probabilities (scalar = |0⟩, e1 = |1⟩); other blades summed as leakage.
-// Uses a WaitGroup to mirror par-for style aggregation across lanes.
-func Measure(w io.Writer, qubits []gamath.Multivector) {
-	n := len(qubits)
-	if n == 0 {
-		fmt.Fprintln(w, "MEASURE: (no qubits)")
+// applyCNOTLocal conditional flip + full-register ripple (O(n)).
+func (e *Engine) applyCNOTLocal(control, target int) {
+	n := len(e.Qubits)
+	if control < 0 || control >= n || target < 0 || target >= n {
 		return
 	}
-	slots := make([]measSlot, n)
-	var wg sync.WaitGroup
+	p1 := probOne(e.Qubits[control])
+	if p1 > 0.5 {
+		applyPauliX(&e.Qubits[target])
+	}
+	ctrl := e.Qubits[control]
+	coher := e.Global.Coherence
+	if coher < 1e-9 {
+		coher = 1e-9
+	}
+	invN := 1.0 / float64(n)
+	for j := 0; j < n; j++ {
+		d := j - control
+		if d < 0 {
+			d = -d
+		}
+		w := p1 * math.Exp(-rippleDecay*float64(d)) * coher
+		tail := p1 * coher * longRangeScale * invN
+		// No branch that skips the inner loop: every j receives a write.
+		for k := 0; k < gamath.Dim; k++ {
+			coupling := (w + tail) * rippleStrength
+			e.Qubits[j].C[k] += coupling * ctrl.C[k]
+		}
+	}
+	e.Global.SystemEntropy += p1 * 1e-6
+}
+
+func (e *Engine) applyGlobalPass() {
+	start := time.Now()
+	g := e.Global
+	n := len(e.Qubits)
+	var accPhase float64
+
 	for i := 0; i < n; i++ {
+		m := &e.Qubits[i]
+		// Touch every component: normalization + interference + decay.
+		var norm float64
+		for k := 0; k < gamath.Dim; k++ {
+			v := m.C[k]
+			norm += v * v
+		}
+		if norm > 1e-30 {
+			inv := 1.0 / math.Sqrt(norm)
+			for k := 0; k < gamath.Dim; k++ {
+				m.C[k] *= inv
+			}
+		}
+
+		b := g.Coherence * interfereBlend
+		a0, a1 := m.C[0], m.C[1]
+		m.C[0] = a0*(1-b) + a1*b
+		m.C[1] = a1*(1-b) + a0*b
+
+		for k := 2; k < gamath.Dim; k++ {
+			m.C[k] *= (1.0 - gradeDecay)
+		}
+
+		*m = gamath.Normalize(*m)
+		ns := gamath.NormSq(*m)
+		g.EnergyField[i] = ns / float64(gamath.Dim)
+		accPhase += ns * float64(i+1) * 1e-6
+	}
+
+	g.GlobalPhase = math.Mod(g.GlobalPhase+accPhase, 2*math.Pi)
+	g.Coherence = g.Coherence*(1.0-1e-5) + 1e-5
+
+	e.Stats.GlobalPassCount++
+	e.Stats.GlobalPassNanos += time.Since(start).Nanoseconds()
+	bytesPer := uint64(gamath.Dim * 8)
+	e.Stats.BytesTouched += uint64(n) * bytesPer * 2 // read+write pass
+}
+
+// ChecksumFNV folds every multivector component and global scalars into FNV-1a.
+func (e *Engine) ChecksumFNV() uint64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	writeF := func(f float64) {
+		binary.LittleEndian.PutUint64(buf[:], math.Float64bits(f))
+		_, _ = h.Write(buf[:])
+	}
+
+	g := e.Global
+	writeF(g.GlobalPhase)
+	writeF(g.Coherence)
+	writeF(g.SystemEntropy)
+	for _, ef := range g.EnergyField {
+		writeF(ef)
+	}
+	for i := range e.Qubits {
+		for k := 0; k < gamath.Dim; k++ {
+			writeF(e.Qubits[i].C[k])
+		}
+	}
+	return h.Sum64()
+}
+
+func parallelApplyH(q []gamath.Multivector, indices []int) {
+	parallelGate(q, indices, applyHadamard)
+}
+
+func parallelApplyX(q []gamath.Multivector, indices []int) {
+	parallelGate(q, indices, func(m *gamath.Multivector) { applyPauliX(m) })
+}
+
+// parallelGate runs fn on each index using a bounded worker count (real work, no per-index goroutine storm).
+func parallelGate(q []gamath.Multivector, indices []int, fn func(*gamath.Multivector)) {
+	if len(indices) == 0 {
+		return
+	}
+	w := runtime.GOMAXPROCS(0)
+	if w < 1 {
+		w = 1
+	}
+	if len(indices) <= w {
+		for _, idx := range indices {
+			if idx >= 0 && idx < len(q) {
+				fn(&q[idx])
+			}
+		}
+		return
+	}
+	chunk := (len(indices) + w - 1) / w
+	var wg sync.WaitGroup
+	for c := 0; c < w; c++ {
+		lo := c * chunk
+		if lo >= len(indices) {
+			break
+		}
+		hi := lo + chunk
+		if hi > len(indices) {
+			hi = len(indices)
+		}
 		wg.Add(1)
-		go func(idx int) {
+		go func(lo, hi int) {
 			defer wg.Done()
-			m := qubits[idx]
-			ns := gamath.NormSq(m)
-			if ns < 1e-18 {
-				return
+			for _, idx := range indices[lo:hi] {
+				if idx >= 0 && idx < len(q) {
+					fn(&q[idx])
+				}
 			}
-			inv := 1.0 / ns
-			p0 := m.C[bladeScalar] * m.C[bladeScalar] * inv
-			p1 := m.C[bladeE1] * m.C[bladeE1] * inv
-			other := 1.0 - p0 - p1
-			if other < 0 {
-				other = 0
-			}
-			slots[idx] = measSlot{p0: p0, p1: p1, other: other}
-		}(i)
+		}(lo, hi)
 	}
 	wg.Wait()
-	for i := 0; i < n; i++ {
-		s := slots[i]
-		fmt.Fprintf(w, "MEASURE q[%d]  P(|0>)=%.6f  P(|1>)=%.6f  P(other)=%.6f\n", i, s.p0, s.p1, s.other)
+}
+
+func (e *Engine) applySequentialH(idx int) {
+	if idx >= 0 && idx < len(e.Qubits) {
+		applyHadamard(&e.Qubits[idx])
 	}
+}
+
+func (e *Engine) applySequentialX(idx int) {
+	if idx >= 0 && idx < len(e.Qubits) {
+		applyPauliX(&e.Qubits[idx])
+	}
+}
+
+func (e *Engine) flushHBatch(indices []int) {
+	if len(indices) == 0 {
+		return
+	}
+	if e.TruthMode {
+		for _, idx := range indices {
+			e.applySequentialH(idx)
+			e.touchGlobalFromGate(idx)
+			e.Stats.TotalOps++
+			e.applyGlobalPass()
+		}
+		return
+	}
+	parallelApplyH(e.Qubits, indices)
+	for _, idx := range indices {
+		e.touchGlobalFromGate(idx)
+		e.Stats.TotalOps++
+	}
+	e.applyGlobalPass()
+}
+
+func (e *Engine) flushXBatch(indices []int) {
+	if len(indices) == 0 {
+		return
+	}
+	if e.TruthMode {
+		for _, idx := range indices {
+			e.applySequentialX(idx)
+			e.touchGlobalFromGate(idx)
+			e.Stats.TotalOps++
+			e.applyGlobalPass()
+		}
+		return
+	}
+	parallelApplyX(e.Qubits, indices)
+	for _, idx := range indices {
+		e.touchGlobalFromGate(idx)
+		e.Stats.TotalOps++
+	}
+	e.applyGlobalPass()
+}
+
+// MeasureAll prints per-qubit geometric probabilities and updates global entropy/coherence.
+func (e *Engine) MeasureAll() {
+	g := e.Global
+	n := len(e.Qubits)
+	for i := 0; i < n; i++ {
+		m := gamath.Normalize(e.Qubits[i])
+		e.Qubits[i] = m
+		p0 := m.C[0] * m.C[0]
+		p1 := m.C[1] * m.C[1]
+		fmt.Printf("MEASURE q[%d]: P(|0>)=%.4f P(|1>)=%.4f\n", i, p0, p1)
+		g.SystemEntropy += p0 * p1
+	}
+	g.Coherence *= 0.999
+	e.applyGlobalPass()
+}
+
+// Run parses execution: first instruction must be ALLOC; respects truth mode batching.
+func Run(instructions []parser.Instruction, truthMode bool) (*Engine, error) {
+	var n int
+	var started bool
+	var hBatch, xBatch []int
+	flush := func(e *Engine) {
+		e.flushHBatch(hBatch)
+		hBatch = hBatch[:0]
+		e.flushXBatch(xBatch)
+		xBatch = xBatch[:0]
+	}
+
+	var eng *Engine
+	for _, ins := range instructions {
+		switch ins.Op {
+		case parser.OpAlloc:
+			if started {
+				return nil, fmt.Errorf("duplicate ALLOC")
+			}
+			n = ins.N
+			eng = NewEngine(n)
+			eng.TruthMode = truthMode
+			eng.applyGlobalPass()
+			started = true
+		case parser.OpH:
+			if eng == nil {
+				return nil, fmt.Errorf("H before ALLOC")
+			}
+			if ins.N >= n {
+				return nil, fmt.Errorf("H: target %d out of range (n=%d)", ins.N, n)
+			}
+			if len(xBatch) > 0 {
+				eng.flushXBatch(xBatch)
+				xBatch = xBatch[:0]
+			}
+			hBatch = append(hBatch, ins.N)
+		case parser.OpX:
+			if eng == nil {
+				return nil, fmt.Errorf("X before ALLOC")
+			}
+			if ins.N >= n {
+				return nil, fmt.Errorf("X: target %d out of range (n=%d)", ins.N, n)
+			}
+			if len(hBatch) > 0 {
+				eng.flushHBatch(hBatch)
+				hBatch = hBatch[:0]
+			}
+			xBatch = append(xBatch, ins.N)
+		case parser.OpCNOT:
+			if eng == nil {
+				return nil, fmt.Errorf("CNOT before ALLOC")
+			}
+			flush(eng)
+			if ins.Ctrl >= n || ins.Target >= n {
+				return nil, fmt.Errorf("CNOT: indices out of range")
+			}
+			eng.applyCNOTLocal(ins.Ctrl, ins.Target)
+			eng.touchGlobalFromGate(ins.Ctrl)
+			eng.touchGlobalFromGate(ins.Target)
+			eng.Stats.TotalOps++
+			eng.applyGlobalPass()
+		case parser.OpMeasure:
+			if eng == nil {
+				return nil, fmt.Errorf("MEASURE before ALLOC")
+			}
+			flush(eng)
+			eng.MeasureAll()
+			eng.Stats.TotalOps++
+		}
+	}
+	if eng == nil {
+		return nil, fmt.Errorf("missing ALLOC")
+	}
+	flush(eng)
+	eng.Stats.LastChecksum = eng.ChecksumFNV()
+	return eng, nil
 }

@@ -1,6 +1,6 @@
 # RQ4D (RomaQuantum4D)
 
-**RQ4D HyperEngine** — Go engine for quantum-style circuits in **Cl(4,0)** geometric algebra (16-component multivectors), no complex matrices.
+**RQ4D** — Go engine for **geometric simulation scale** quantum-style circuits in **Cl(4,0)** (16-component multivectors per lane), no complex matrices.
 
 **Repository:** [github.com/RomanAILabs-Auth/RomaQuantum4D](https://github.com/RomanAILabs-Auth/RomaQuantum4D)
 
@@ -25,9 +25,12 @@ Parallel Hadamard on eight lanes, then measurement (50/50 superposition per qubi
 
 ```bash
 go run ./cmd/rq4d examples/manifold_sweep.rq4d
+go run ./cmd/rq4d --truth-mode examples/manifold_sweep.rq4d
 ```
 
-Expected: green `Executing RQ4D HyperEngine...`, eight `MEASURE q[i]` lines, then `[Telemetry: Z-Axis = X.XXms]`.
+Expected: banner `Executing RQ4D (geometric simulation scale...)`, eight `MEASURE q[i]` lines, then the **honest telemetry** block (gate op count, global-pass timing, bytes touched, **FNV-1a checksum**).
+
+Optional **`--truth-mode`**: disables parallel **H**/**X** batching and runs a full **O(n) global pass** after every gate line (stricter, slower).
 
 ## Other examples
 
@@ -45,7 +48,7 @@ go run ./cmd/rq4d examples/parallel_h.rq4d
 | Instruction | Meaning |
 |-------------|---------|
 | `ALLOC n` | n qubits in $\|0\rangle$ |
-| `H i` | Hadamard on qubit `i` (consecutive `H` lines batch in parallel) |
+| `H i` | Hadamard on qubit `i` (consecutive `H` lines batch in parallel unless `--truth-mode`) |
 | `X i` | Pauli-X (bit flip) on `i` |
 | `CNOT c t` | Conditional X on `t` when control `c` is $\|1\rangle$ |
 | `MEASURE` | Print $P(\|0\rangle)$, $P(\|1\rangle)$ per qubit |

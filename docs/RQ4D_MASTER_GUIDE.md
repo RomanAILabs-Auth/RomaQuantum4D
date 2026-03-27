@@ -2,7 +2,7 @@
 
 **RomanAILabs — Daniel Harding**
 
-Single reference for **install**, **daily use**, **programming / extending** the engine, and **LLM-assisted development** of [RomaQuantum4D](https://github.com/RomanAILabs-Auth/RomaQuantum4D) (RQ4D HyperEngine).
+Single reference for **install**, **daily use**, **programming / extending** the engine, and **LLM-assisted development** of [RomaQuantum4D](https://github.com/RomanAILabs-Auth/RomaQuantum4D) (RQ4D).
 
 ---
 
@@ -53,7 +53,7 @@ On Windows, `rq4d.exe` is gitignored at repo root when named `/rq4d.exe` — loc
 go run ./cmd/rq4d examples/manifold_sweep.rq4d
 ```
 
-You should see a green **Executing RQ4D HyperEngine...** line (ANSI), eight measurement lines, and **`[Telemetry: Z-Axis = X.XXms]`**.
+You should see **`Executing RQ4D (geometric simulation scale...)`**, eight `MEASURE q[i]` lines, and the **honest telemetry** footer (global passes, bytes touched, **FNV-1a checksum**).
 
 ### 1.5 Optional: world-record style demo script
 
@@ -63,7 +63,7 @@ From repo root:
 pwsh -ExecutionPolicy Bypass -File .\scripts\RQ4D_World_Record.ps1
 ```
 
-This builds the binary, generates a large `.rq4d` under `examples/`, and runs it. Large `-QubitCount` values create huge scripts and may stress memory and goroutine counts — start with defaults, then scale up.
+This builds the binary, generates a large `.rq4d` under `examples/`, and runs it. Large `-QubitCount` values create huge scripts; each **CNOT** and each **global pass** is **O(n)** over the full register — start with defaults, then scale up.
 
 ### 1.6 Troubleshooting
 
@@ -72,7 +72,7 @@ This builds the binary, generates a large `.rq4d` under `examples/`, and runs it
 | `go: cannot find module` | Not at module root | `cd` to folder containing `go.mod`. |
 | Parse error on script | Wrong path or bad opcode | Check spelling; see [§5](#5-quick-reference). |
 | Green banner shows as escape codes | Terminal without ANSI | Use Windows Terminal, or ignore raw `\033[32m`. |
-| Slow / OOM on huge scripts | Millions of `H` lines batched as one parallel wave | Reduce qubit count or use `-GenerateOnly` on the PS1 script. |
+| Slow / OOM on huge scripts | **O(n)** global passes per batch + **O(n)** CNOT ripple | Reduce qubit count, use `-GenerateOnly`, or try `--truth-mode` only on small scripts. |
 
 ### 1.7 Relation to **Roma4D** (`.r4d`)
 
@@ -87,14 +87,15 @@ This builds the binary, generates a large `.rq4d` under `examples/`, and runs it
 ### 2.1 Command-line interface
 
 ```text
-rq4d <path-to-script.rq4d>
+rq4d [--truth-mode] <path-to-script.rq4d>
 ```
 
-- **One argument**: path to a script file.  
-- **No argument**: prints `usage: rq4d <script.rq4d>` and exits with code **2**.  
+- **One positional argument**: path to a script file.  
+- **`--truth-mode`**: sequential **H**/**X** (no parallel batching); **global O(n) pass** after **every** gate line.  
+- **No argument**: prints usage and exits with code **2**.  
 - **Parse failure**: message on stderr, exit **1**.
 
-Execution order is **strictly sequential** by instruction type, with **internal parallel batches** where noted below.
+Execution is sequential by script line; **consecutive `H` or `X`** lines of the **same opcode** may share one parallel apply + **one** global pass (unless `--truth-mode`).
 
 ### 2.2 Script format (`.rq4d` for RQ4D engine)
 
@@ -107,11 +108,11 @@ Execution order is **strictly sequential** by instruction type, with **internal 
 
 | Opcode | Syntax | Meaning |
 |--------|--------|---------|
-| **ALLOC** | `ALLOC n` | Allocate `n` qubits, each initialized to **\|0⟩** (scalar `1` in Cl(4,0) encoding). Parallel zero-init. |
-| **H** | `H i` | Hadamard on qubit index `i`. **Consecutive `H` lines** are executed in **one parallel batch** (goroutines). |
-| **X** | `X i` | Computational **NOT** (bit flip via left multiply by `e₁`). Consecutive `X` lines are parallel-batched. |
-| **CNOT** | `CNOT c t` | If control `c` is **definitely \|1⟩** (probability ≈ 1 on the `e₁` blade), apply **X** on target `t`. See §3.4. |
-| **MEASURE** | `MEASURE` | Print per-qubit **P(\|0⟩)**, **P(\|1⟩)**, **P(other)** from multivector energy; parallel reduction across indices. |
+| **ALLOC** | `ALLOC n` | Allocate `n` qubits (`n` ≤ **2²⁴**), each **\|0⟩** (scalar `1`). Followed by an **O(n) global pass** (memory touch + normalization bookkeeping). |
+| **H** | `H i` | Hadamard on the **scalar / e₁** computational slice. Consecutive **`H`** lines batch in parallel (worker pool) + **one** global pass, unless **`--truth-mode`**. |
+| **X** | `X i` | Pauli **X** via **swap** of blades **0** and **1**. Consecutive **`X`** batch like **H**. |
+| **CNOT** | `CNOT c t` | If **P(\|1⟩)** on control exceeds **½**, **X** on target; then **O(n)** **non-local ripple** couples all lanes + shared **global** fields. |
+| **MEASURE** | `MEASURE` | Print **P(\|0⟩)**, **P(\|1⟩)** from normalized **scalar / e₁**; updates entropy/coherence; ends with a **global pass**. |
 
 Indices are **0-based**. **`ALLOC` must appear before** gates that use qubits.
 
@@ -126,12 +127,10 @@ Indices are **0-based**. **`ALLOC` must appear before** gates that use qubits.
 
 ### 2.5 Output semantics
 
-- After successful parse, the engine prints **`Executing RQ4D HyperEngine...`** in green (ANSI).  
-- **MEASURE** lines look like:  
-  `MEASURE q[k]  P(|0>)=...  P(|1>)=...  P(other)=...`  
-- After **all** instructions, wall-clock telemetry:  
-  **`[Telemetry: Z-Axis = X.XXms]`**  
-  This covers **parse + full circuit**, not a single gate.
+- Banner: **`Executing RQ4D (geometric simulation scale, Cl(4,0) register)...`**  
+- **MEASURE** lines: `MEASURE q[k]: P(|0>)=... P(|1>)=...`  
+- Footer **honest telemetry**: register size, wall time, **total gate ops**, **global pass** count and aggregate time, **average time per global pass**, **cumulative bytes touched** (pass accounting), **FNV-1a checksum** over **all** multivector components + global scalars/fields.  
+- This is a **geometric simulation**, not a claim of physical qubits or quantum supremacy.
 
 ### 2.6 PowerShell: `scripts/RQ4D_World_Record.ps1`
 
@@ -153,9 +152,9 @@ Indices are **0-based**. **`ALLOC` must appear before** gates that use qubits.
 ### 3.1 Repository layout
 
 ```text
-cmd/rq4d/main.go          # CLI, instruction dispatch, parallel batches, telemetry
+cmd/rq4d/main.go          # CLI, flags (--truth-mode), parse → quantum.Run, telemetry footer
 internal/math/clifford.go # Cl(4,0): Multivector, GeometricProduct, Rotor, Normalize, Reverse
-internal/quantum/bridge.go# Qubit encoding, Hadamard, Pauli-X variants, CNOT, Measure
+internal/quantum/bridge.go# Global system, gates, O(n) global pass, CNOT ripple, checksum, Run()
 internal/parser/lexer.go # .rq4d line parser → []Instruction
 examples/*.rq4d           # Sample circuits (and some Roma4D-style .r4d companions)
 scripts/*.ps1             # Automation / large manifold generation
@@ -166,8 +165,8 @@ go.mod                    # module romanailabs/rq4d
 
 - **Algebra**: **Cl(4,0)** — Euclidean signature `(+,+,+,+)` on four basis vectors **e₁…e₄**.  
 - **Storage**: `Multivector` holds **16** `float64` coefficients; basis blade index = **4-bit bitmask** (bit `i` ⟺ **e_{i+1}** present).  
-- **No complex matrices**, no Hilbert-space tensor product for multi-qubit entanglement in the current **product-state** simulator. Each “qubit” is an independent **16D multivector**.  
-- **Geometric product** is the full Clifford product on basis blades (see `basisProduct` + double loop in `GeometricProduct`).
+- **No complex matrices**, no full **2ⁿ** Hilbert-space statevector. Each lane is a **16D multivector**, coupled by **shared global fields** and **O(n) passes** so the simulator does not pretend independent per-qubit scaling is “free.”  
+- **Geometric product** remains available in `internal/math` for rotors and extensions; the scripted **H** gate uses the explicit **2×2** action on **C[0], C[1]** for correct superposition in that slice.
 
 ### 3.3 Qubit encoding
 
@@ -175,28 +174,28 @@ go.mod                    # module romanailabs/rq4d
 |-------|-------------|
 | **\|0⟩** | Scalar blade **1.0** (index 0), rest 0. |
 | **\|1⟩** | **e₁** blade (index 1) normalized usage via gates. |
-| **Hadamard** | Left multiply by operator with scalar and **e₁** each **1/√2** (superposition in this real slice). |
-| **X (script / CNOT)** | **PauliXBitFlip**: left multiply by **e₁** (swap **\|0⟩↔|1⟩** in this encoding). |
+| **Hadamard** | **(a₀,a₁) → ((a₀+a₁)/√2, (a₀−a₁)/√2)** on blades **0** and **1**. |
+| **X (script / CNOT)** | **Swap** blades **0** and **1**. |
 
 ### 3.4 CNOT semantics (current engine)
 
-- **Control “is \|1⟩”** only if **P(\|1⟩) = e₁² / ‖M‖² > 1 − ε** (`ctrlOneEps` in `bridge.go`).  
-- **\|+⟩**-style controls (**≈50/50**) do **not** flip the target (avoids bogus classical randomness).  
-- True **entanglement** (correlated multi-qubit state in one GA object) is **not** implemented; CNOT is a **conditional classical flip** on the product representation.
+- **Conditional flip** when **P(\|1⟩) = e₁² / ‖M‖² > ½** on the control (same “definite \|1⟩” spirit as before).  
+- **Non-local ripple**: every CNOT performs an **O(n)** update over **all** lanes (distance-weighted coupling plus a small uniform tail) and updates **global** entropy/coherence. This is **not** a full density-matrix entangled state — it is **honest geometric coupling** to avoid “two-qubit only” fiction.  
+- A full **2ⁿ** simulator is still **out of scope**; the goal is **visible cost** and **shared manifold pressure**, not cryptographic-grade quantum emulation.
 
-### 3.5 Parallelism
+### 3.5 Parallelism and global passes
 
-- **ALLOC**: goroutine per slot for `QubitZero()`.  
-- **Runs of `H` or `X`**: one `WaitGroup` wave per contiguous block of the same opcode.  
-- **MEASURE**: goroutine per qubit for probability extraction, then ordered print.  
-- Extremely large **H** blocks ⇒ **O(n) goroutines** in one wave — may limit practical **n** on client hardware.
+- **ALLOC**: one **O(n)** **global pass** immediately after allocation (touches every lane).  
+- **Runs of `H` or `X`**: worker-pool parallel apply over the batch indices, then **one** **O(n)** **global pass** (unless **`--truth-mode`**, which runs **pass per line**).  
+- **CNOT / MEASURE**: each ends with a **global pass**.  
+- **Checksum**: **FNV-1a** over **all** floats in the register + **GlobalSystem** — intended to change when work runs and state changes.
 
 ### 3.6 Extending the engine
 
 1. **New opcode**  
    - Add `Op*` constant and `parseLine` branch in `internal/parser/lexer.go`.  
    - Extend `Instruction` fields if needed.  
-   - Handle in `cmd/rq4d/main.go` (consider batching like `H`/`X` if embarrassingly parallel).
+   - Handle in `internal/quantum/bridge.go` **`Run`** (respect **`--truth-mode`** and schedule **global passes** honestly).
 
 2. **New gate**  
    - Implement in `internal/quantum/bridge.go` using **`gamath.GeometricProduct`** / **`Rotor`**.  
@@ -224,23 +223,23 @@ Use this section as **system or user context** when asking an LLM to modify RQ4D
 
 ### 4.1 One-paragraph project truth
 
-> **RomaQuantum4D (RQ4D)** is a **Go 1.22** module **`romanailabs/rq4d`** that executes line-oriented **`.rq4d` scripts** with opcodes **ALLOC, H, X, CNOT, MEASURE**. Quantum-style behavior is simulated with **Cl(4,0) multivectors** (16 `float64`s per qubit) and the **geometric product** — **not** with complex unitary matrices or density matrices. The CLI is **`cmd/rq4d`**. Multi-qubit **entanglement is not** modeled; CNOT is a **conditional bit-flip** when the control is **definitely \|1⟩** in the scalar/**e₁** encoding.
+> **RomaQuantum4D (RQ4D)** is a **Go 1.22** module **`romanailabs/rq4d`** that runs **`.rq4d` scripts** (**ALLOC, H, X, CNOT, MEASURE**) as a **geometric simulation** on **Cl(4,0)** lanes (16 `float64`s each). A **global system** (phase, per-lane energy field, coherence) and **mandatory O(n) global passes** couple the register; **CNOT** adds an **O(n) ripple**. **`--truth-mode`** disables parallel **H**/**X** batching and runs a global pass **per gate line**. Output includes a **checksum** over all state — **not** a claim of real hardware or supremacy.
 
 ### 4.2 Hard rules for generated changes
 
 1. **Do not** replace the GA core with `complex128` matrices or NumPy-style statevectors unless the user explicitly requests a **new subsystem** and accepts a **breaking redesign**.  
 2. **Do not** import standard **`math`** as **`math`** in `internal/quantum` if it shadows **`romanailabs/rq4d/internal/math`** — use **`gamath`** / **`stdmath`**.  
-3. **Preserve** telemetry line format: **`[Telemetry: Z-Axis = %.2fms]`** unless the user asks to change it.  
+3. **Preserve** honest telemetry (**global passes**, **checksum**, **geometric simulation scale** wording) unless the user requests a deliberate format change.  
 4. **Parser** must remain **line-based**, **fail with clear errors** (file:line), and **ignore `#`**.  
-5. **Batch parallel `H` / `X`** for consecutive lines — do not serialize those without reason.  
+5. **Batch parallel `H` / `X`** for consecutive lines when **`--truth-mode` is off**; honor **`--truth-mode`** by **not** batching.  
 6. **`.r4d` Roma4D language** files in `examples/` are **not** parsed by `rq4d`; do not assume they load in the Go engine.
 
 ### 4.3 File map (where to edit what)
 
 | Task | Primary files |
 |------|----------------|
-| New script opcode | `internal/parser/lexer.go`, `cmd/rq4d/main.go` |
-| Gate / measure math | `internal/quantum/bridge.go` |
+| New script opcode | `internal/parser/lexer.go`, `internal/quantum/bridge.go` (`Run`) |
+| Gate / measure / global pass | `internal/quantum/bridge.go` |
 | GA product / rotor | `internal/math/clifford.go` |
 | UX / banner / flags | `cmd/rq4d/main.go` |
 | Large demo generation | `scripts/RQ4D_World_Record.ps1` |

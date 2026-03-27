@@ -138,17 +138,19 @@ $memoryMB = ($qubitCount * 16 * 8) / 1MB
 $cliffordFloats = $qubitCount * 16
 
 Write-Host "`n============================================================" -ForegroundColor Magenta
-Write-Host "       ROMAN AI LABS - SOVEREIGN PERFORMANCE ANALYSIS       " -ForegroundColor White -BackgroundColor Magenta
+Write-Host "   Geometric simulation scale (honest run summary, RQ4D)     " -ForegroundColor White -BackgroundColor DarkMagenta
 Write-Host "============================================================" -ForegroundColor Magenta
-Write-Host "[RESULT] Manifold fold complete." -ForegroundColor Green
-Write-Host "[METRIC] Qubit Density:           $qubitCount" -ForegroundColor Cyan
-Write-Host "[METRIC] Clifford float64s:       $cliffordFloats" -ForegroundColor Cyan
-Write-Host "[METRIC] Active memory (approx):  $($memoryMB.ToString('F2')) MB" -ForegroundColor Cyan
-Write-Host "[METRIC] Geometric throughput:    $($opsPerSec.ToString('N0')) ops/sec (script ops / wall time)" -ForegroundColor Yellow
-Write-Host "[METRIC] Z-Axis latency:          $($elapsedMs.ToString('F2')) ms (wall clock)" -ForegroundColor Green
+Write-Host "[RESULT] Script execution finished (see engine checksum below)." -ForegroundColor Green
+Write-Host "[METRIC] Register lanes (ALLOC n): $qubitCount" -ForegroundColor Cyan
+Write-Host "[METRIC] Clifford float64s:         $cliffordFloats" -ForegroundColor Cyan
+Write-Host "[METRIC] Active memory (approx):   $($memoryMB.ToString('F2')) MB (multivectors only)" -ForegroundColor Cyan
+Write-Host "[METRIC] Script op lines (approx):  $totalOps ; throughput ~ $($opsPerSec.ToString('N0')) lines/sec vs wall" -ForegroundColor Yellow
+Write-Host "[METRIC] Wall clock:                $($elapsedMs.ToString('F2')) ms" -ForegroundColor Green
+$chk = $output | Select-String -Pattern "Execution checksum \(FNV1a\):\s+0x[0-9a-fA-F]+" | Select-Object -First 1
+if ($chk) { Write-Host "[METRIC] $($chk.Line.Trim())" -ForegroundColor DarkCyan }
 Write-Host "------------------------------------------------------------" -ForegroundColor Gray
-Write-Host "Note: Product-state GA model; throughput is host-dependent." -ForegroundColor DarkGray
+Write-Host "Note: Each tick includes O(n) global passes + honest CNOT coupling cost." -ForegroundColor DarkGray
 Write-Host "============================================================" -ForegroundColor Magenta
 
-Write-Host "`nSample manifold readout (first 4 lines after banner):" -ForegroundColor Gray
-$output | Select-Object -First 4 | ForEach-Object { Write-Host $_ -ForegroundColor White }
+Write-Host "`nSample engine output (first 6 lines after banner):" -ForegroundColor Gray
+$output | Select-Object -First 6 | ForEach-Object { Write-Host $_ -ForegroundColor White }
