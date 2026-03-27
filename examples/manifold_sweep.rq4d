@@ -1,0 +1,18 @@
+# manifold_sweep.rq4d
+# Copyright RomanAILabs - Daniel Harding
+
+# 1. Allocate an 8-Qubit SoA Array
+ALLOC 8
+
+# 2. Parallel Spacetime Fold (The engine will batch these into one Goroutine sweep)
+H 0
+H 1
+H 2
+H 3
+H 4
+H 5
+H 6
+H 7
+
+# 3. Collapse the Manifold and Read Telemetry
+MEASURE
