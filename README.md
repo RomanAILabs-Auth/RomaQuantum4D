@@ -1,76 +1,42 @@
 # RQ4D (RomaQuantum4D)
 
-**RQ4D** — Go engine for **geometric simulation scale** quantum-style circuits in **Cl(4,0)** (16-component multivectors per lane), no complex matrices.
+**RQ4D** — Go **quantum lattice simulator**: complex amplitudes on a 3D grid, Trotter-style steps, optional **tensor-network–style** bond truncation (`--backend=tn`, `--chi`). Mean-field and TN paths are deterministic aside from explicit measurement sampling.
 
 **Repository:** [github.com/RomanAILabs-Auth/RomaQuantum4D](https://github.com/RomanAILabs-Auth/RomaQuantum4D)
 
-**Full documentation (install + user + programming + LLM pack):** [docs/RQ4D_MASTER_GUIDE.md](docs/RQ4D_MASTER_GUIDE.md)
+**Documentation:** [docs/RQ4D_MASTER_GUIDE.md](docs/RQ4D_MASTER_GUIDE.md) (may still describe the legacy geometric CLI in places; the binary below is the lattice engine.)
 
 ## Build, run, install
 
 From the repository root (module `github.com/RomanAILabs-Auth/RomaQuantum4D`):
 
 ```bash
-go build -o rq4d ./cmd/rq4d          # Unix/macOS binary name
-go build -o rq4d.exe ./cmd/rq4d     # Windows
-go install ./cmd/rq4d                 # installs rq4d to $GOPATH/bin or $GOBIN
+go build -o rq4d ./cmd/rq4d          # Unix/macOS
+go build -o rq4d.exe ./cmd/rq4d      # Windows
+go install ./cmd/rq4d                # installs rq4d to $GOPATH/bin or $GOBIN
 ```
 
-Run a script:
+### Lattice run (default)
 
 ```bash
-rq4d examples/manifold_sweep.rq4d
-rq4d --truth-mode examples/manifold_sweep.rq4d
+go run ./cmd/rq4d
+# or with options:
+go run ./cmd/rq4d -lx 8 -ly 8 -lz 8 -steps 30 -backend tn -chi 4 -measure -seed 7
 ```
 
-## Large-scale geometric demo (PowerShell, any clone path)
+Flags include `-lx`, `-ly`, `-lz`, `-dim` (2, 4, or 8), `-dt`, `-steps`, `-j`, `-hz`, `-hx`, `-workers`, `-backend` (`meanfield` | `tn` | `cpu`), `-chi` (1…32 for `tn`), `-measure`, `-collapse`, `-seed`.
 
-From the repo root (or invoke by full path):
+### Legacy `.rq4d` script examples
 
-```powershell
-pwsh -ExecutionPolicy Bypass -File .\scripts\RQ4D_World_Record.ps1
-pwsh -File .\scripts\RQ4D_World_Record.ps1 -QubitCount 65536
-pwsh -File .\scripts\RQ4D_World_Record.ps1 -QubitCount 131072 -GenerateOnly
-```
+Files under `examples/*.rq4d` targeted the **previous** Cl(4,0) geometric script runner. The current `rq4d` binary does **not** parse those scripts; keep them as reference or remove locally.
 
-Optional: `-MirrorDir` copies the generated `.rq4d` and this script there.  
-`-EngineRoot` overrides auto-detected repo root. `-SkipBuild` uses an existing `rq4d` / `rq4d.exe` binary.
+### Large-scale demo script
 
-## Featured demo (8-qubit manifold sweep)
-
-Parallel Hadamard on eight lanes, then measurement (50/50 superposition per qubit):
-
-```bash
-go run ./cmd/rq4d examples/manifold_sweep.rq4d
-go run ./cmd/rq4d --truth-mode examples/manifold_sweep.rq4d
-```
-
-Expected: banner `Executing RQ4D (geometric simulation scale...)`, eight `MEASURE q[i]` lines, then the **honest telemetry** block (gate op count, global-pass timing, bytes touched, **FNV-1a checksum**).
-
-Optional **`--truth-mode`**: disables parallel **H**/**X** batching and runs a full **O(n) global pass** after every gate line (stricter, slower).
-
-## Other examples
-
-```bash
-go run ./cmd/rq4d examples/cnot_demo.rq4d
-go run ./cmd/rq4d examples/parallel_h.rq4d
-```
+`scripts/RQ4D_World_Record.ps1` was written for the legacy script-based CLI. It is **not** wired to the lattice flags yet; use `go run ./cmd/rq4d` with explicit `-lx/-ly/-lz` for large sweeps (mind memory).
 
 ## Roma4D companion
 
-`examples/spacetime_ui_v3.r4d` is a **native Roma4D** worldtube / `par for` UI sketch — run with **`r4d`** from a Roma4D checkout, not `rq4d`.
-
-## `.rq4d` script ISA (RQ4D engine)
-
-| Instruction | Meaning |
-|-------------|---------|
-| `ALLOC n` | n qubits in $\|0\rangle$ |
-| `H i` | Hadamard on qubit `i` (consecutive `H` lines batch in parallel unless `--truth-mode`) |
-| `X i` | Pauli-X (bit flip) on `i` |
-| `CNOT c t` | Field-conditioned update on `t` (local amplitude + global phase/coherence/energy; not a literal device CNOT) |
-| `MEASURE` | Print $P(\|0\rangle)$, $P(\|1\rangle)$ per qubit |
-
-Lines starting with `#` are comments.
+`examples/spacetime_ui_v3.r4d` is **Roma4D** source — run with **`r4d`** from a Roma4D checkout, not `rq4d`.
 
 ## Module
 
