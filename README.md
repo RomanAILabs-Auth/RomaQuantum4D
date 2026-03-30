@@ -4,6 +4,8 @@
 
 ### High-performance **quantum lattice simulation** in pure Go
 
+https://youtu.be/BabjOj63iOo?si=hVCBP3PVwR7Uc3zg
+
 *3D periodic torus · complex amplitudes · Strang–Trotter dynamics · mean-field & tensor-network paths · deterministic evolution · SHA-256 state sealing*
 
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev/)
